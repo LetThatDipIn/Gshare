@@ -1,0 +1,11 @@
+cl_updaterate 128
+cl_interp-ratio 1
+cl-interp "0.015625"
+speaker_config 2
+viewmodel_fov 68
+viewmodel_offset_x 2.5
+viewmodel_offset_y 2.0
+viewmodel_offset_z -2.0
+r_csgo_water_refraction false
+r_csgo_water_effects false
+-nojoy -softparticlesdefaultoff +violence_hblood 0 +r_drawparticles 0 -forcenovsync -limitvsconst +exec autoexec.cfg -novid -mat_disable_bloom -cl_forcepreload 

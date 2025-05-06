@@ -108,7 +108,7 @@ func cleanupInactiveSessions() {
 }
 
 func startServer() {
-	http.Handle("/", http.FileServer(http.Dir("./filesharefrontend/build")))
+	http.Handle("/", http.FileServer(http.Dir("./filesharefrontend/public/")))
 	http.HandleFunc("/api/session/create", withLogging(createSession))
 	http.HandleFunc("/api/session/join", withLogging(joinSession))
 	http.HandleFunc("/api/files", withLogging(handleFiles))

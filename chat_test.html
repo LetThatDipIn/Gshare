@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AssistDeck Chat Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 10px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .messages { border: 1px solid #ccc; min-height: 300px; margin: 10px 0; padding: 10px; overflow-y: auto; }
+        .message { margin-bottom: 10px; padding: 5px; }
+        .user-message { background-color: #e6f7ff; border-radius: 5px; }
+        .ai-message { background-color: #f0f0f0; border-radius: 5px; }
+        input, button, textarea { margin: 5px 0; padding: 8px; }
+        textarea { width: 100%; height: 80px; }
+        button { cursor: pointer; background-color: #4CAF50; color: white; border: none; padding: 10px 15px; }
+        .panel { border: 1px solid #ddd; padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .participant { background-color: #f9f9f9; padding: 8px; margin: 5px 0; border-radius: 4px; display: flex; justify-content: space-between; }
+        .owner { border-left: 4px solid #4CAF50; }
+        .tabs { display: flex; margin-bottom: 10px; }
+        .tab { padding: 10px 15px; cursor: pointer; border: 1px solid #ddd; background-color: #f1f1f1; }
+        .tab.active { background-color: #fff; border-bottom: 1px solid #fff; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>AssistDeck Chat Test</h1>
+        
+        <div>
+            <label for="token">JWT Token:</label>
+            <input type="text" id="token" style="width: 100%;" placeholder="Enter your JWT token">
+        </div>
+        
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('chat')">Chat</div>
+            <div class="tab" onclick="switchTab('participants')">Participants</div>
+        </div>
+        
+        <div id="chatTab">
+            <div>
+                <label for="session">Session ID:</label>
+                <input type="text" id="session" placeholder="Enter session ID">
+                <button onclick="createSession()">Create New Session</button>
+                <button onclick="connect()">Connect</button>
+                <button onclick="disconnect()">Disconnect</button>
+            </div>
+            
+            <div class="messages" id="messages"></div>
+            
+            <div>
+                <textarea id="message" placeholder="Type your message here"></textarea>
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+        
+        <div id="participantsTab" style="display: none;">
+            <div class="panel">
+                <h3>Session Participants</h3>
+                <div>
+                    <button onclick="listParticipants()">Refresh Participants</button>
+                </div>
+                <div id="participantsList">
+                    <p>Please connect to a session first.</p>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h3>Add Participant</h3>
+                <div>
+                    <label for="newParticipantId">User ID:</label>
+                    <input type="text" id="newParticipantId" placeholder="Enter user ID to add">
+                    <button onclick="addParticipant()">Add Participant</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let socket;
+        let currentSessionId = null;
+        let reconnectAttempts = 0;
+        let maxReconnectAttempts = 10;
+        let reconnectInterval = 2000; // Start with 2 second interval
+        let reconnectIntervalID = null;
+        let isManualDisconnect = false;
+        
+        const token = document.getElementById('token');
+        const sessionInput = document.getElementById('session');
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('message');
+        const participantsList = document.getElementById('participantsList');
+        
+        // Switching between tabs
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelector(`.tab[onclick="switchTab('${tabName}')"]`).classList.add('active');
+            
+            if (tabName === 'chat') {
+                document.getElementById('chatTab').style.display = 'block';
+                document.getElementById('participantsTab').style.display = 'none';
+            } else if (tabName === 'participants') {
+                document.getElementById('chatTab').style.display = 'none';
+                document.getElementById('participantsTab').style.display = 'block';
+                if (currentSessionId) {
+                    listParticipants();
+                }
+            }
+        }
+        
+        async function createSession() {
+            if (!token.value) {
+                alert('Please enter your JWT token');
+                return;
+            }
+            
+            try {
+                const response = await fetch('http://localhost:8080/api/chat/sessions', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token.value}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        title: 'Test Session from Web Client'
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.id) {
+                    sessionInput.value = data.id;
+                    alert('Session created successfully: ' + data.id);
+                } else {
+                    alert('Failed to create session');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+        
+        function connect() {
+            if (!token.value || !sessionInput.value) {
+                alert('Please enter both token and session ID');
+                return;
+            }
+            
+            // Reset the reconnect attempts counter
+            reconnectAttempts = 0;
+            isManualDisconnect = false;
+            
+            // Clear any existing reconnect interval
+            if (reconnectIntervalID) {
+                clearInterval(reconnectIntervalID);
+                reconnectIntervalID = null;
+            }
+            
+            if (socket) {
+                socket.close();
+            }
+            
+            currentSessionId = sessionInput.value;
+            
+            // Connect to the WebSocket server
+            connectWebSocket();
+        }
+        
+        function connectWebSocket() {
+            // Note the token is passed as a query parameter in the WebSocket URL
+            addSystemMessage(`Attempting to connect to WebSocket (attempt ${reconnectAttempts + 1})...`);
+            
+            socket = new WebSocket(`ws://localhost:8080/ws?session_id=${currentSessionId}&token=${token.value}`);
+            
+            socket.onopen = function(e) {
+                addSystemMessage('Connected to WebSocket');
+                // Reset reconnect attempts
+                reconnectAttempts = 0;
+                fetchMessages(); // Get existing messages
+            };
+            
+            socket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    addMessage(data.content, data.is_ai_message);
+                } catch (e) {
+                    addSystemMessage('Received: ' + event.data);
+                }
+            };
+            
+            socket.onclose = function(event) {
+                if (event.wasClean) {
+                    addSystemMessage(`Connection closed cleanly, code=${event.code} reason=${event.reason}`);
+                } else {
+                    addSystemMessage(`Connection died unexpectedly, code=${event.code}`);
+                }
+                
+                // Only attempt to reconnect if it wasn't a manual disconnect
+                if (!isManualDisconnect) {
+                    attemptReconnect();
+                }
+            };
+            
+            socket.onerror = function(error) {
+                addSystemMessage(`WebSocket Error: ${error.message || "Unknown error"}`);
+            };
+        }
+        
+        function attemptReconnect() {
+            if (reconnectAttempts >= maxReconnectAttempts) {
+                addSystemMessage(`Maximum reconnection attempts (${maxReconnectAttempts}) reached. Please reconnect manually.`);
+                return;
+            }
+            
+            reconnectAttempts++;
+            
+            // Use exponential backoff with a cap at 30 seconds
+            const delay = Math.min(30000, reconnectInterval * Math.pow(1.5, reconnectAttempts - 1));
+            
+            addSystemMessage(`Connection lost. Attempting to reconnect in ${Math.round(delay/1000)} seconds...`);
+            
+            // Set up reconnection timer
+            setTimeout(function() {
+                if (!isManualDisconnect) {
+                    connectWebSocket();
+                }
+            }, delay);
+        }
+        
+        function disconnect() {
+            isManualDisconnect = true;
+            
+            if (reconnectIntervalID) {
+                clearInterval(reconnectIntervalID);
+                reconnectIntervalID = null;
+            }
+            
+            if (socket) {
+                // Send a proper close frame
+                socket.close(1000, "Manual disconnect");
+                socket = null;
+                currentSessionId = null;
+                addSystemMessage('Disconnected');
+            }
+        }
+        
+        function sendMessage() {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                alert('Not connected to WebSocket');
+                return;
+            }
+            
+            const message = messageInput.value.trim();
+            if (!message) return;
+            
+            const data = {
+                content: message,
+                is_ai_message: false
+            };
+            
+            socket.send(JSON.stringify(data));
+            messageInput.value = '';
+        }
+        
+        function addMessage(message, isAI) {
+            const div = document.createElement('div');
+            div.className = isAI ? 'message ai-message' : 'message user-message';
+            div.textContent = message;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function addSystemMessage(message) {
+            const div = document.createElement('div');
+            div.className = 'message';
+            div.style.color = '#888';
+            div.textContent = message;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        async function fetchMessages() {
+            if (!token.value || !currentSessionId) return;
+            
+            try {
+                const response = await fetch(`http://localhost:8080/api/chat/sessions/${currentSessionId}/messages`, {
+                    headers: {
+                        'Authorization': `Bearer ${token.value}`
+                    }
+                });
+                
+                const messages = await response.json();
+                messagesDiv.innerHTML = '';
+                
+                if (Array.isArray(messages)) {
+                    messages.forEach(msg => {
+                        addMessage(msg.content, msg.is_ai_message);
+                    });
+                    addSystemMessage(`Loaded ${messages.length} messages`);
+                }
+            } catch (error) {
+                addSystemMessage('Error loading messages: ' + error.message);
+            }
+        }
+        
+        // Participant management functions
+        async function listParticipants() {
+            if (!token.value || !currentSessionId) {
+                participantsList.innerHTML = '<p>Please connect to a session first.</p>';
+                return;
+            }
+            
+            try {
+                const response = await fetch(`http://localhost:8080/api/chat/sessions/${currentSessionId}/participants`, {
+                    headers: {
+                        'Authorization': `Bearer ${token.value}`
+                    }
+                });
+                
+                const participants = await response.json();
+                
+                if (Array.isArray(participants)) {
+                    participantsList.innerHTML = '<h4>Total Participants: ' + participants.length + '</h4>';
+                    
+                    participants.forEach(participant => {
+                        const div = document.createElement('div');
+                        div.className = 'participant';
+                        if (participant.is_owner) {
+                            div.className += ' owner';
+                        }
+                        
+                        const infoSpan = document.createElement('span');
+                        infoSpan.innerHTML = `<strong>${participant.name || 'Unknown'}</strong> (${participant.email})<br>
+                                             <small>ID: ${participant.user_id}</small>
+                                             ${participant.is_owner ? ' <b>[Owner]</b>' : ''}`;
+                        div.appendChild(infoSpan);
+                        
+                        if (!participant.is_owner) {
+                            const removeBtn = document.createElement('button');
+                            removeBtn.textContent = 'Remove';
+                            removeBtn.onclick = () => removeParticipant(participant.user_id);
+                            div.appendChild(removeBtn);
+                        }
+                        
+                        participantsList.appendChild(div);
+                    });
+                } else {
+                    participantsList.innerHTML = '<p>Error fetching participants</p>';
+                }
+            } catch (error) {
+                participantsList.innerHTML = '<p>Error: ' + error.message + '</p>';
+            }
+        }
+        
+        async function addParticipant() {
+            const newParticipantId = document.getElementById('newParticipantId').value.trim();
+            
+            if (!token.value || !currentSessionId) {
+                alert('Please connect to a session first');
+                return;
+            }
+            
+            if (!newParticipantId) {
+                alert('Please enter a user ID');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`http://localhost:8080/api/chat/sessions/${currentSessionId}/participants`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token.value}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: newParticipantId
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    alert('Participant added successfully');
+                    document.getElementById('newParticipantId').value = '';
+                    listParticipants();
+                } else {
+                    alert('Error: ' + (result.error || 'Failed to add participant'));
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+        
+        async function removeParticipant(userId) {
+            if (!token.value || !currentSessionId) {
+                alert('Please connect to a session first');
+                return;
+            }
+            
+            if (!confirm('Are you sure you want to remove this participant?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`http://localhost:8080/api/chat/sessions/${currentSessionId}/participants/${userId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token.value}`
+                    }
+                });
+                
+                if (response.ok) {
+                    alert('Participant removed successfully');
+                    listParticipants();
+                } else {
+                    const result = await response.json();
+                    alert('Error: ' + (result.error || 'Failed to remove participant'));
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>
